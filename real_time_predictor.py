@@ -6,6 +6,7 @@ from collections import deque
 from googletrans import Translator
 import os
 import sys
+from PIL import Image, ImageDraw, ImageFont
 
 # Import hand detection
 try:
@@ -186,7 +187,52 @@ class ImprovedASLPredictor:
         # Return stable prediction if we have enough consistent predictions
         is_stable = self.stable_count >= self.stability_threshold
         return gesture if is_stable else None, is_stable
-    
+
+        def _get_font_path_for_language(self):
+            base = os.path.join(os.path.dirname(__file__), "fonts")
+            mapping = {
+                'English': os.path.join(base, "NotoSans-Regular.ttf"),
+                'Hindi':   os.path.join(base, "NotoSansDevanagari-Regular.ttf"),
+                'Marathi': os.path.join(base, "NotoSansDevanagari-Regular.ttf"),
+                'Tamil':   os.path.join(base, "NotoSansTamil-Regular.ttf"),
+                'Telugu':  os.path.join(base, "NotoSansTelugu-Regular.ttf"),
+                'Bengali': os.path.join(base, "NotoSansBengali-Regular.ttf"),
+                'Gujarati':os.path.join(base, "NotoSansGujarati-Regular.ttf"),
+                'Kannada': os.path.join(base, "NotoSansKannada-Regular.ttf"),
+                'Malayalam':os.path.join(base, "NotoSansMalayalam-Regular.ttf"),
+                'Punjabi': os.path.join(base, "NotoSansGurmukhi-Regular.ttf"),
+            }
+            # fallback to a general font if language not found
+            return mapping.get(self.current_language, mapping['English'])
+
+        def put_unicode_text(self, img, text, pos, font_size=28, color=(255,255,255)):
+            """Draw Unicode text onto an OpenCV BGR image using PIL.
+            pos is (x, y) in pixels (top-left of text)."""
+            if not text:
+                return img
+            try:
+                # Convert BGR->RGB and to PIL
+                pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                draw = ImageDraw.Draw(pil_img)
+
+                font_path = self._get_font_path_for_language()
+                if os.path.exists(font_path):
+                    font = ImageFont.truetype(font_path, font_size)
+                else:
+                    # If font file missing, fall back to default PIL font
+                    font = ImageFont.load_default()
+                    print(f"⚠️ Font not found: {font_path}. Using default font (may not support Unicode).")
+
+                # Pillow expects color as RGB tuple
+                draw.text((int(pos[0]), int(pos[1])), str(text), font=font, fill=(int(color[0]), int(color[1]), int(color[2])))
+
+                # Convert back to OpenCV BGR
+                return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            except Exception as e:
+                print(f"❌ Unicode render error: {e}")
+                return img
+
+
     def translate_text(self, text):
         """Translate text to target language"""
         if self.current_language == 'English' or not text:
@@ -253,6 +299,7 @@ class ImprovedASLPredictor:
         print("  'c'      - Clear all text")
         print("  'l'      - Change language")
         print("  'd'      - Toggle debug mode")
+        print("  '+'/'-'  - Adjust confidence threshold")
         print("  'q'      - Quit")
         print("  's'      - Save current sentence")
         print("\n🎯 Recognition Settings:")
@@ -312,9 +359,9 @@ class ImprovedASLPredictor:
             fps_counter.append(fps)
             avg_fps = np.mean(fps_counter)
             
-            # Create enhanced UI
-            self.draw_enhanced_ui(img, current_prediction, confidence, is_stable, 
-                                top_3_predictions, avg_fps, frame_count)
+            # Draw merged UI (Fixed UI style + top-3 debug)
+            img = self.draw_enhanced_ui(img, current_prediction, confidence, is_stable, 
+                                        top_3_predictions, avg_fps, frame_count)
             
             cv2.imshow('Improved ASL Recognition', img)
             
@@ -340,12 +387,39 @@ class ImprovedASLPredictor:
                     self.recognized_text = self.recognized_text[:-1]
                     self.translated_text = ""
                     print(f"🗑️ Deleted '{removed}' -> Text: '{self.recognized_text}'")
-            
+                
+            elif key == 13:  # Enter - translate
+                if self.recognized_text:
+                    self.translated_text = self.translate_text(self.recognized_text)
+
+                    # Create popup image
+                    popup_w, popup_h = 800, 200
+                    popup_img = np.zeros((popup_h, popup_w, 3), dtype=np.uint8)
+
+                    # Header
+                    cv2.putText(popup_img, f"Translated to {self.current_language}:",
+                                (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+                    # Wrapped Unicode-safe lines
+                    wrapped_lines = self.wrap_text(self.translated_text, 40)
+                    base_y = 90
+                    for i, line in enumerate(wrapped_lines[:3]):  # Max 3 lines
+                        popup_img = self.put_unicode_text(popup_img, line,
+                                                        (20, base_y + i * 40),
+                                                        font_size=30, color=(255, 255, 255))
+
+                    cv2.imshow("Translation Result", popup_img)
+                    cv2.waitKey(2000)  # Display for 2 seconds
+                    cv2.destroyWindow("Translation Result")
+
+
+                '''
             elif key == 13:  # Enter - translate
                 if self.recognized_text:
                     self.translated_text = self.translate_text(self.recognized_text)
                     print(f"🌐 Translated to {self.current_language}: '{self.translated_text}'")
-            
+                '''
+                    
             elif key == ord('c'):  # Clear
                 self.recognized_text = ""
                 self.translated_text = ""
@@ -355,6 +429,7 @@ class ImprovedASLPredictor:
             
             elif key == ord('l'):  # Change language
                 self.change_language()
+                continue
             
             elif key == ord('d'):  # Toggle debug mode
                 self.debug_mode = not self.debug_mode
@@ -364,6 +439,14 @@ class ImprovedASLPredictor:
                 if self.recognized_text:
                     self.save_sentence()
             
+            elif key == ord('+') or key == ord('='):
+                self.confidence_threshold = min(0.99, self.confidence_threshold + 0.05)
+                print(f"🎯 Confidence threshold increased to: {self.confidence_threshold:.2f}")
+            
+            elif key == ord('-'):
+                self.confidence_threshold = max(0.50, self.confidence_threshold - 0.05)
+                print(f"🎯 Confidence threshold decreased to: {self.confidence_threshold:.2f}")
+            
             elif key == ord('q'):  # Quit
                 print("👋 Goodbye!")
                 break
@@ -372,69 +455,84 @@ class ImprovedASLPredictor:
         cv2.destroyAllWindows()
     
     def draw_enhanced_ui(self, img, prediction, confidence, is_stable, top_3, fps, frame_count):
-        """Draw enhanced user interface"""
+        """Draw merged user interface (Fixed UI style + improved debug/top3)"""
         h, w, _ = img.shape
         
-        # Create semi-transparent overlays
+        # Create a more opaque overlay for better visibility (Fixed UI style)
         overlay = img.copy()
-        
-        # Top panel (larger)
+        # Top panel
         cv2.rectangle(overlay, (10, 10), (w-10, 160), (0, 0, 0), -1)
         # Bottom panel
-        cv2.rectangle(overlay, (10, h-180), (w-10, h-10), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (10, h-200), (w-10, h-10), (0, 0, 0), -1)
         
-        # Blend overlays
-        img = cv2.addWeighted(img, 0.7, overlay, 0.3, 0)
+        # Blend with higher opacity
+        img = cv2.addWeighted(img, 0.6, overlay, 0.4, 0)
         
-        # Current prediction with color coding
+        # Add white borders for better visibility
+        cv2.rectangle(img, (10, 10), (w-10, 160), (255, 255, 255), 2)
+        cv2.rectangle(img, (10, h-200), (w-10, h-10), (255, 255, 255), 2)
+        
+        # Current prediction with larger font and bright colors
         pred_color = (0, 255, 0) if is_stable else (0, 165, 255)  # Green if stable, orange if not
-        cv2.putText(img, f'Prediction: {prediction}', (20, 45), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, pred_color, 2)
+        cv2.putText(img, f'Prediction: {prediction}', (20, 50), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.0, pred_color, 2)
         
         # Confidence with color coding
         conf_color = (0, 255, 0) if confidence > self.confidence_threshold else (0, 0, 255)
-        cv2.putText(img, f'Confidence: {confidence:.3f}', (20, 80), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, conf_color, 2)
+        cv2.putText(img, f'Confidence: {confidence:.3f}', (20, 85), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, conf_color, 2)
         
         # Stability indicator
         stability_text = f'Stable: {"YES" if is_stable else "NO"} ({self.stable_count}/{self.stability_threshold})'
         stability_color = (0, 255, 0) if is_stable else (0, 255, 255)
-        cv2.putText(img, stability_text, (20, 110), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, stability_color, 2)
+        cv2.putText(img, stability_text, (20, 115), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, stability_color, 2)
         
-        # Language and FPS
-        cv2.putText(img, f'Language: {self.current_language} | FPS: {fps:.1f}', (20, 140), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        # Language and threshold / FPS
+        cv2.putText(img, f'Language: {self.current_language} | Threshold: {self.confidence_threshold:.2f} | FPS: {fps:.1f}', 
+                   (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         
-        # Debug info - show top 3 predictions
+        # Debug info - show top 3 predictions (from Improved version)
         if self.debug_mode and top_3:
-            y_offset = 160
-            cv2.putText(img, 'Top 3 Predictions:', (w-300, y_offset), 
+            y_offset = 170
+            cv2.putText(img, 'Top 3 Predictions:', (w-340, y_offset), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             for i, (gesture, conf) in enumerate(top_3[:3]):
                 y_offset += 25
-                cv2.putText(img, f'{i+1}. {gesture}: {conf:.3f}', (w-300, y_offset), 
+                cv2.putText(img, f'{i+1}. {gesture}: {conf:.3f}', (w-340, y_offset), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
         # Recognized text (with wrapping for long text)
         text_lines = self.wrap_text(f'Text: {self.recognized_text}', 60)
         for i, line in enumerate(text_lines[:2]):  # Show max 2 lines
-            cv2.putText(img, line, (20, h-150 + i*30), 
+            cv2.putText(img, line, (20, h-170 + i*30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
-        # Translated text
-        if self.translated_text:
-            trans_lines = self.wrap_text(f'Translated: {self.translated_text}', 50)
-            for i, line in enumerate(trans_lines[:2]):
-                cv2.putText(img, line, (20, h-90 + i*25), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        
-        # Enhanced controls
+                # Translated text (Unicode safe)
+            if self.translated_text:
+                # Wrap text to avoid overly long lines
+                trans_lines = self.wrap_text(f'Translated: {self.translated_text}', 50)
+                base_y = h - 120
+                for i, line in enumerate(trans_lines[:2]):  # only show first 2 lines
+                    y = base_y + i * 28
+                    img = self.put_unicode_text(img, line, (20, y), font_size=26, color=(0, 255, 255))
+
+        # Enhanced controls with better visibility (includes +/-)
         controls = [
-            'SPACE: Add | ENTER: Translate | C: Clear | D: Debug | S: Save | Q: Quit'
+            'SPACE: Add Letter | ENTER: Translate | C: Clear | D: Debug | S: Save | Q: Quit',
+            'BACKSPACE: Delete | L: Language | +/-: Adjust Threshold'
         ]
-        cv2.putText(img, controls[0], (20, h-20), 
+        cv2.putText(img, controls[0], (20, h-60), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(img, controls[1], (20, h-35), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        
+        # FPS counter in top right (redundant with top text but handy)
+        if fps > 0:
+            cv2.putText(img, f'FPS: {fps:.1f}', (w-120, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        return img
     
     def wrap_text(self, text, width):
         """Wrap text to fit in specified width"""
@@ -456,7 +554,55 @@ class ImprovedASLPredictor:
         return lines
     
     def change_language(self):
-        """Change target language with improved interface"""
+        """Non-blocking language selection inside OpenCV window (Windows/Linux compatible)"""
+        languages = list(self.target_languages.keys())
+        selected_index = languages.index(self.current_language)
+
+        while True:
+            # Create menu window
+            menu_img = np.zeros((400, 600, 3), dtype=np.uint8)
+            cv2.putText(menu_img, "Select Language", (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+
+            for i, lang in enumerate(languages):
+                color = (0, 255, 0) if i == selected_index else (255, 255, 255)
+                cv2.putText(menu_img, f"{i+1}. {lang}", (40, 80 + i * 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+            cv2.putText(menu_img, "↑/↓: Move  Enter: Select  Q/Esc: Cancel",
+                        (20, 380), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+            cv2.imshow("Language Menu", menu_img)
+
+            key = cv2.waitKey(0) & 0xFFFFFFFF
+
+            # Cancel
+            if key in [27, ord('q')]:  
+                cv2.destroyWindow("Language Menu")
+                return
+
+            # Up arrow (Windows/Linux) or W
+            elif key in [2490368, 82, ord('w')]:
+                selected_index = (selected_index - 1) % len(languages)
+
+            # Down arrow (Windows/Linux) or S
+            elif key in [2621440, 84, ord('s')]:
+                selected_index = (selected_index + 1) % len(languages)
+
+            # Enter = Select
+            elif key == 13:
+                self.current_language = languages[selected_index]
+                print(f"✅ Language changed to: {self.current_language}")
+                if self.recognized_text:
+                    self.translated_text = self.translate_text(self.recognized_text)
+                    print(f"🔄 Re-translated: '{self.translated_text}'")
+                cv2.destroyWindow("Language Menu")
+                return
+
+
+    '''
+    def change_language(self):
+        """Change target language (Fixed UI simple menu)"""
         print("\n🌐 Available languages:")
         for i, lang in enumerate(self.target_languages.keys(), 1):
             marker = "👉" if lang == self.current_language else "  "
@@ -471,7 +617,6 @@ class ImprovedASLPredictor:
                     self.current_language = languages[choice-1]
                     print(f"✅ Language changed to: {self.current_language}")
                     
-                    # Re-translate existing text
                     if self.recognized_text:
                         self.translated_text = self.translate_text(self.recognized_text)
                         print(f"🔄 Re-translated: '{self.translated_text}'")
@@ -500,6 +645,8 @@ class ImprovedASLPredictor:
             print(f"💾 Sentence saved to '{filename}'")
         except Exception as e:
             print(f"❌ Error saving sentence: {e}")
+    '''
+
 
 def main():
     """Main function with improved error handling"""
