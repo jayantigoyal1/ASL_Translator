@@ -85,8 +85,13 @@ Once the application window appears, here's how to interact with it:
 
 Here are some screenshots illustrating the application's interface and functionality:
 
+**GUI interface**
 ![complete_asl_app.py]({B46392A0-B288-4A56-A215-8B5D5E473E17}.png)
+
+**Real Time Detection**
 ![REAL TIME DETECTION]({DC2F2A76-FD51-4EF5-B83B-53EEFFD04544}.png)
+
+**Translation feature**
 ![translation]({DBBF4316-D794-44B2-8207-6BC85CD39CA6}.png)
 ![trabnslation]({AE51B066-6290-4B4D-A3E6-799B88471793}.png)
 
